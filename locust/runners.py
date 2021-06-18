@@ -803,31 +803,43 @@ class WorkerRunner(DistributedRunner):
             except RPCError as e:
                 logger.error("RPCError found when receiving from master: %s" % (e))
                 continue
-            if msg.type == "spawn":
-                self.worker_state = STATE_SPAWNING
-                self.client.send(Message("spawning", None, self.client_id))
-                job = msg.data
-                self.spawn_rate = job["spawn_rate"]
-                self.target_user_count = job["num_users"]
-                self.environment.host = job["host"]
-                self.environment.stop_timeout = job["stop_timeout"]
-                if self.spawning_greenlet:
-                    # kill existing spawning greenlet before we launch new one
-                    self.spawning_greenlet.kill(block=True)
-                self.spawning_greenlet = self.greenlet.spawn(
-                    lambda: self.start(user_count=job["num_users"], spawn_rate=job["spawn_rate"])
-                )
-                self.spawning_greenlet.link_exception(greenlet_exception_handler)
-            elif msg.type == "stop":
-                self.stop()
-                self.client.send(Message("client_stopped", None, self.client_id))
-                self.client.send(Message("client_ready", None, self.client_id))
-                self.worker_state = STATE_INIT
-            elif msg.type == "quit":
-                logger.info("Got quit message from master, shutting down...")
-                self.stop()
-                self._send_stats()  # send a final report, in case there were any samples not yet reported
-                self.greenlet.kill(block=True)
+            self.handle_message(msg)
+
+    def handle_message(self, msg):
+        if msg.type == "spawn":
+            self.on_message_spawn(msg)
+        elif msg.type == "stop":
+            self.on_message_stop(msg)
+        elif msg.type == "quit":
+            self.on_message_quit(msg)
+
+    def on_message_spawn(self, msg):
+        self.worker_state = STATE_SPAWNING
+        self.client.send(Message("spawning", None, self.client_id))
+        job = msg.data
+        self.spawn_rate = job["spawn_rate"]
+        self.target_user_count = job["num_users"]
+        self.environment.host = job["host"]
+        self.environment.stop_timeout = job["stop_timeout"]
+        if self.spawning_greenlet:
+            # kill existing spawning greenlet before we launch new one
+            self.spawning_greenlet.kill(block=True)
+        self.spawning_greenlet = self.greenlet.spawn(
+            lambda: self.start(user_count=job["num_users"], spawn_rate=job["spawn_rate"])
+        )
+        self.spawning_greenlet.link_exception(greenlet_exception_handler)
+
+    def on_message_quit(self, msg):
+        logger.info("Got quit message from master, shutting down...")
+        self.stop()
+        self._send_stats()  # send a final report, in case there were any samples not yet reported
+        self.greenlet.kill(block=True)
+
+    def on_message_stop(self, msg):
+        self.stop()
+        self.client.send(Message("client_stopped", None, self.client_id))
+        self.client.send(Message("client_ready", None, self.client_id))
+        self.worker_state = STATE_INIT
 
     def stats_reporter(self):
         while True:
